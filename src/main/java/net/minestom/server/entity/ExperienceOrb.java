@@ -1,6 +1,8 @@
 package net.minestom.server.entity;
 
 import net.minestom.server.coordinate.Vec;
+import net.minestom.server.thread.Acquirable;
+import org.jetbrains.annotations.NotNull;
 
 import java.util.Comparator;
 
@@ -93,6 +95,12 @@ public class ExperienceOrb extends Entity {
         this.experienceCount = experienceCount;
 
         getViewers().forEach(this::addViewer);
+    }
+
+    @SuppressWarnings("unchecked")
+    @Override
+    public @NotNull Acquirable<? extends ExperienceOrb> getAcquirable() {
+        return (Acquirable<? extends ExperienceOrb>) super.getAcquirable();
     }
 
     private Player getClosestPlayer(Entity entity, float maxDistance) {

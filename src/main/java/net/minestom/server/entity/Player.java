@@ -77,6 +77,7 @@ import net.minestom.server.snapshot.PlayerSnapshot;
 import net.minestom.server.snapshot.SnapshotImpl;
 import net.minestom.server.snapshot.SnapshotUpdater;
 import net.minestom.server.statistic.PlayerStatistic;
+import net.minestom.server.thread.Acquirable;
 import net.minestom.server.timer.Scheduler;
 import net.minestom.server.utils.MathUtils;
 import net.minestom.server.utils.PacketUtils;
@@ -2374,6 +2375,12 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
     public @NotNull CompletableFuture<Void> teleport(@NotNull Pos position, long @Nullable [] chunks) {
         chunkUpdateLimitChecker.clearHistory();
         return super.teleport(position, chunks);
+    }
+
+    @SuppressWarnings("unchecked")
+    @Override
+    public @NotNull Acquirable<? extends Player> getAcquirable() {
+        return (Acquirable<? extends Player>) super.getAcquirable();
     }
 
     /**
