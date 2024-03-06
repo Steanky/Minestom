@@ -125,8 +125,8 @@ public final class ThreadDispatcher<P> {
     }
 
     private void advanceTickCounter() {
+        VarHandle.releaseFence();
         ticks++;
-        VarHandle.fullFence();
     }
 
     /**
@@ -136,6 +136,7 @@ public final class ThreadDispatcher<P> {
      * @return the number of processed ticks
      */
     public long getTicks() {
+        long ticks = this.ticks;
         VarHandle.acquireFence();
         return ticks;
     }
