@@ -60,7 +60,9 @@ public class ThreadDispatcherTest {
         assertEquals(0, counter2.get());
 
         for (int i = 0; i < 100; i++) {
+            assertEquals(i, dispatcher.getTicks());
             dispatcher.updateAndAwait(System.currentTimeMillis());
+            assertEquals(i + 1, dispatcher.getTicks());
             assertEquals(i + 1, counter1.get());
             assertEquals(i + 1, counter2.get());
         }

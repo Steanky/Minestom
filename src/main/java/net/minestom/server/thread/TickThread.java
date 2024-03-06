@@ -4,12 +4,11 @@ import net.minestom.server.MinecraftServer;
 import net.minestom.server.Tickable;
 import net.minestom.server.entity.Entity;
 import net.minestom.server.instance.Chunk;
-import org.jetbrains.annotations.ApiStatus;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.*;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.LockSupport;
@@ -96,7 +95,11 @@ public final class TickThread extends MinestomThread {
         LockSupport.unpark(this);
     }
 
-    public Collection<ThreadDispatcher.Partition> entries() {
+    public @NotNull @UnmodifiableView Collection<ThreadDispatcher.Partition> entries() {
+        return Collections.unmodifiableList(entries);
+    }
+
+    @NotNull Collection<ThreadDispatcher.Partition> mutableEntries() {
         return entries;
     }
 

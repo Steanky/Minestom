@@ -6,7 +6,9 @@ import org.jctools.queues.MpscUnboundedArrayQueue;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Unmodifiable;
+import org.jetbrains.annotations.UnmodifiableView;
 
+import java.lang.invoke.VarHandle;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.function.IntFunction;
@@ -34,6 +36,9 @@ public final class ThreadDispatcher<P> {
 
     // Requests consumed at the end of each tick
     private final MessagePassingQueue<DispatchUpdate<P>> updates = new MpscUnboundedArrayQueue<>(1024);
+
+    // Counts the number of executed ticks
+    private long ticks;
 
     private ThreadDispatcher(ThreadProvider<P> provider, int threadCount,
                              @NotNull IntFunction<? extends TickThread> threadGenerator) {
@@ -114,6 +119,25 @@ public final class ThreadDispatcher<P> {
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
+
+        // Increment the tick counter
+        advanceTickCounter();
+    }
+
+    private void advanceTickCounter() {
+        ticks++;
+        VarHandle.fullFence();
+    }
+
+    /**
+     * Gets the number of full ticks this dispatcher has processed. Increments by 1 every time
+     * {@link ThreadDispatcher#updateAndAwait(long)} is invoked.
+     *
+     * @return the number of processed ticks
+     */
+    public long getTicks() {
+        VarHandle.acquireFence();
+        return ticks;
     }
 
     /**
@@ -140,8 +164,8 @@ public final class ThreadDispatcher<P> {
                     final TickThread next = retrieveThread(partition);
                     if (next != previous) {
                         partitionEntry.thread = next;
-                        previous.entries().remove(partitionEntry);
-                        next.entries().add(partitionEntry);
+                        previous.mutableEntries().remove(partitionEntry);
+                        next.mutableEntries().add(partitionEntry);
                     }
                     this.partitionUpdateQueue.addLast(partition);
                     if (--counter <= 0 || System.nanoTime() - currentTime >= nanoTimeout) {
@@ -195,7 +219,7 @@ public final class ThreadDispatcher<P> {
         if (partitions.containsKey(partition)) return;
         final TickThread thread = retrieveThread(partition);
         final Partition partitionEntry = new Partition(thread);
-        thread.entries().add(partitionEntry);
+        thread.mutableEntries().add(partitionEntry);
         this.partitions.put(partition, partitionEntry);
         this.partitionUpdateQueue.add(partition);
         if (partition instanceof Tickable tickable) {
@@ -207,7 +231,7 @@ public final class ThreadDispatcher<P> {
         final Partition partitionEntry = partitions.remove(partition);
         if (partitionEntry != null) {
             TickThread thread = partitionEntry.thread;
-            thread.entries().remove(partitionEntry);
+            thread.mutableEntries().remove(partitionEntry);
         }
         this.partitionUpdateQueue.remove(partition);
         if (partition instanceof Tickable tickable) {
@@ -253,8 +277,8 @@ public final class ThreadDispatcher<P> {
             return thread;
         }
 
-        public @NotNull List<Tickable> elements() {
-            return elements;
+        public @NotNull @UnmodifiableView List<Tickable> elements() {
+            return Collections.unmodifiableList(elements);
         }
     }
 
