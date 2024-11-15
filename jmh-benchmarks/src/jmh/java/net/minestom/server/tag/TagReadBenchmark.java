@@ -1,10 +1,11 @@
 package net.minestom.server.tag;
 
-import net.kyori.adventure.nbt.CompoundBinaryTag;
-import net.kyori.adventure.nbt.StringBinaryTag;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 @Warmup(iterations = 5, time = 1000, timeUnit = TimeUnit.MILLISECONDS)
@@ -22,7 +23,8 @@ public class TagReadBenchmark {
     TagHandler tagHandler;
     Tag<String> secondTag;
 
-    CompoundBinaryTag compound;
+    Map<String, String> map;
+    Map<String, String> concurrentMap;
 
     @Setup
     public void setup() {
@@ -30,9 +32,12 @@ public class TagReadBenchmark {
         this.tagHandler = TagHandler.newHandler();
         if (present) tagHandler.setTag(TAG, "value");
         secondTag = Tag.String("key");
-
-        this.compound = present ? CompoundBinaryTag.builder().put("key", StringBinaryTag
-                .stringBinaryTag("value")).build() : CompoundBinaryTag.empty();
+        // Concurrent map benchmark
+        map = new HashMap<>();
+        if (present) map.put("key", "value");
+        // Hash map benchmark
+        concurrentMap = new ConcurrentHashMap<>();
+        if (present) concurrentMap.put("key", "value");
     }
 
     @Benchmark
@@ -51,7 +56,12 @@ public class TagReadBenchmark {
     }
 
     @Benchmark
-    public void readCompound(Blackhole blackhole) {
-        blackhole.consume(compound.getString("key"));
+    public void readConcurrentMap(Blackhole blackhole) {
+        blackhole.consume(concurrentMap.get("key"));
+    }
+
+    @Benchmark
+    public void readMap(Blackhole blackhole) {
+        blackhole.consume(map.get("key"));
     }
 }

@@ -1,9 +1,10 @@
 package net.minestom.server.tag;
 
-import net.kyori.adventure.nbt.CompoundBinaryTag;
-import net.kyori.adventure.nbt.StringBinaryTag;
 import org.openjdk.jmh.annotations.*;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 @Warmup(iterations = 5, time = 1000, timeUnit = TimeUnit.MILLISECONDS)
@@ -18,7 +19,8 @@ public class TagWriteBenchmark {
     TagHandler tagHandler;
     Tag<String> secondTag;
 
-    CompoundBinaryTag compound;
+    Map<String, String> map;
+    Map<String, String> concurrentMap;
 
     @Setup
     public void setup() {
@@ -26,9 +28,12 @@ public class TagWriteBenchmark {
         this.tagHandler = TagHandler.newHandler();
         tagHandler.setTag(TAG, "value");
         secondTag = Tag.String("key");
-
-        this.compound = CompoundBinaryTag.builder().put("key",
-                StringBinaryTag.stringBinaryTag("value")).build();
+        // Concurrent map benchmark
+        map = new HashMap<>();
+        map.put("key", "value");
+        // Hash map benchmark
+        concurrentMap = new ConcurrentHashMap<>();
+        concurrentMap.put("key", "value");
     }
 
     @Benchmark
@@ -44,5 +49,15 @@ public class TagWriteBenchmark {
     @Benchmark
     public void writeNewTag() {
         tagHandler.setTag(Tag.String("key"), "value");
+    }
+
+    @Benchmark
+    public void writeConcurrentMap() {
+        concurrentMap.put("key", "value");
+    }
+
+    @Benchmark
+    public void writeMap() {
+        map.put("key", "value");
     }
 }

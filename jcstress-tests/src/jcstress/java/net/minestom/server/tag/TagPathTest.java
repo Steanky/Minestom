@@ -1,10 +1,12 @@
 package net.minestom.server.tag;
 
 import net.kyori.adventure.nbt.CompoundBinaryTag;
-import net.kyori.adventure.nbt.IntBinaryTag;
 import org.openjdk.jcstress.annotations.*;
 import org.openjdk.jcstress.infra.results.L_Result;
 
+import java.util.Map;
+
+import static net.kyori.adventure.nbt.IntBinaryTag.intBinaryTag;
 import static org.openjdk.jcstress.annotations.Expect.ACCEPTABLE;
 
 @JCStressTest
@@ -30,14 +32,9 @@ public class TagPathTest {
     @Arbiter
     public void arbiter(L_Result r) {
         var compound = handler.asCompound();
-
-        var tag1 = CompoundBinaryTag.builder().put("path", IntBinaryTag.intBinaryTag(1)).build();
-        var tag2 = CompoundBinaryTag.builder().put("path",
-                CompoundBinaryTag.builder().put("key", IntBinaryTag.intBinaryTag(5)).build()).build();
-
-        if (compound.equals(tag1)) {
+        if (compound.equals(CompoundBinaryTag.from(Map.of("path", intBinaryTag(1))))) {
             r.r1 = "tag";
-        } else if (compound.equals(tag2)) {
+        } else if (compound.equals(CompoundBinaryTag.from(Map.of("path", CompoundBinaryTag.from(Map.of("key", intBinaryTag(5))))))) {
             r.r1 = "tag_path";
         } else {
             r.r1 = compound;
