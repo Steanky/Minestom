@@ -4,9 +4,9 @@ plugins {
 
 dependencies {
     jcstressImplementation(rootProject)
-    jcstress(libs.jcstress.core)
 }
 
 jcstress {
     verbose = "true"
+    jcstressDependency = libs.jcstress.core.get().toString()
 }
