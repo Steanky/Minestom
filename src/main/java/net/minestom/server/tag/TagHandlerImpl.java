@@ -238,7 +238,7 @@ final class TagHandlerImpl implements TagHandler {
         }
 
         Node(Node parent) {
-            this(parent, new StaticIntMap.Array<>());
+            this(parent, new StaticIntMap.Hash<>());
         }
 
         Node() {
@@ -294,7 +294,7 @@ final class TagHandlerImpl implements TagHandler {
         @Contract("null -> !null")
         Node copy(Node parent) {
             CompoundBinaryTag.Builder tmp = CompoundBinaryTag.builder();
-            Node result = new Node(parent, new StaticIntMap.Array<>());
+            Node result = new Node(parent, new StaticIntMap.Hash<>());
             StaticIntMap<Entry<?>> entries = result.entries;
             this.entries.forValues(entry -> {
                 Tag tag = entry.tag;

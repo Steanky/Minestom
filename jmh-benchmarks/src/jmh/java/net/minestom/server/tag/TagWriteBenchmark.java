@@ -1,11 +1,9 @@
 package net.minestom.server.tag;
 
-import org.jglrxavpok.hephaistos.nbt.NBT;
-import org.jglrxavpok.hephaistos.nbt.mutable.MutableNBTCompound;
+import net.kyori.adventure.nbt.CompoundBinaryTag;
+import net.kyori.adventure.nbt.StringBinaryTag;
 import org.openjdk.jmh.annotations.*;
 
-import java.util.HashMap;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 @Warmup(iterations = 5, time = 1000, timeUnit = TimeUnit.MILLISECONDS)
@@ -20,8 +18,7 @@ public class TagWriteBenchmark {
     TagHandler tagHandler;
     Tag<String> secondTag;
 
-    MutableNBTCompound concurrentCompound;
-    MutableNBTCompound compound;
+    CompoundBinaryTag compound;
 
     @Setup
     public void setup() {
@@ -29,12 +26,9 @@ public class TagWriteBenchmark {
         this.tagHandler = TagHandler.newHandler();
         tagHandler.setTag(TAG, "value");
         secondTag = Tag.String("key");
-        // Concurrent map benchmark
-        this.concurrentCompound = new MutableNBTCompound(new ConcurrentHashMap<>());
-        concurrentCompound.set("key", NBT.String("value"));
-        // Hash map benchmark
-        this.compound = new MutableNBTCompound(new HashMap<>());
-        compound.set("key", NBT.String("value"));
+
+        this.compound = CompoundBinaryTag.builder().put("key",
+                StringBinaryTag.stringBinaryTag("value")).build();
     }
 
     @Benchmark
@@ -50,15 +44,5 @@ public class TagWriteBenchmark {
     @Benchmark
     public void writeNewTag() {
         tagHandler.setTag(Tag.String("key"), "value");
-    }
-
-    @Benchmark
-    public void writeConcurrentCompound() {
-        concurrentCompound.setString("key", "value");
-    }
-
-    @Benchmark
-    public void writeCompound() {
-        compound.setString("key", "value");
     }
 }

@@ -1,12 +1,10 @@
 package net.minestom.server.tag;
 
-import org.jglrxavpok.hephaistos.nbt.NBT;
-import org.jglrxavpok.hephaistos.nbt.mutable.MutableNBTCompound;
+import net.kyori.adventure.nbt.CompoundBinaryTag;
+import net.kyori.adventure.nbt.StringBinaryTag;
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
 
-import java.util.HashMap;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 @Warmup(iterations = 5, time = 1000, timeUnit = TimeUnit.MILLISECONDS)
@@ -24,8 +22,7 @@ public class TagReadBenchmark {
     TagHandler tagHandler;
     Tag<String> secondTag;
 
-    MutableNBTCompound concurrentCompound;
-    MutableNBTCompound compound;
+    CompoundBinaryTag compound;
 
     @Setup
     public void setup() {
@@ -33,12 +30,9 @@ public class TagReadBenchmark {
         this.tagHandler = TagHandler.newHandler();
         if (present) tagHandler.setTag(TAG, "value");
         secondTag = Tag.String("key");
-        // Concurrent map benchmark
-        this.concurrentCompound = new MutableNBTCompound(new ConcurrentHashMap<>());
-        if (present) concurrentCompound.set("key", NBT.String("value"));
-        // Hash map benchmark
-        this.compound = new MutableNBTCompound(new HashMap<>());
-        if (present) compound.set("key", NBT.String("value"));
+
+        this.compound = present ? CompoundBinaryTag.builder().put("key", StringBinaryTag
+                .stringBinaryTag("value")).build() : CompoundBinaryTag.empty();
     }
 
     @Benchmark
@@ -54,11 +48,6 @@ public class TagReadBenchmark {
     @Benchmark
     public void readNewTag(Blackhole blackhole) {
         blackhole.consume(tagHandler.getTag(Tag.String("key")));
-    }
-
-    @Benchmark
-    public void readConcurrentCompound(Blackhole blackhole) {
-        blackhole.consume(concurrentCompound.getString("key"));
     }
 
     @Benchmark
