@@ -10,7 +10,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnknownNullability;
 
-import java.lang.invoke.VarHandle;
 import java.util.Map;
 import java.util.function.UnaryOperator;
 
@@ -37,7 +36,6 @@ final class TagHandlerImpl implements TagHandler {
 
     @Override
     public <T> @UnknownNullability T getTag(@NotNull Tag<T> tag) {
-        VarHandle.fullFence();
         return root.getTag(tag);
     }
 
@@ -56,7 +54,6 @@ final class TagHandlerImpl implements TagHandler {
         }
         // Normal tag
         final int tagIndex = tag.index;
-        VarHandle.fullFence();
         Node node = traversePathWrite(root, tag, value != null);
         if (node == null)
             return; // Tried to remove an absent tag. Do nothing
@@ -158,7 +155,6 @@ final class TagHandlerImpl implements TagHandler {
 
     @Override
     public @NotNull CompoundBinaryTag asCompound() {
-        VarHandle.fullFence();
         return root.compound();
     }
 

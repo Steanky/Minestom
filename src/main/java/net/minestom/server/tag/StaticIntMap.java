@@ -105,7 +105,12 @@ sealed interface StaticIntMap<T> permits StaticIntMap.Array, StaticIntMap.Hash {
         }
 
         private static final Entries EMPTY_ENTRIES = new Entries(new int[0], new Object[0]);
-        private static final float LOAD_FACTOR = 0.75F;
+        private static final float LOAD_FACTOR = 0.7F;
+
+        /**
+         * Initial size of the table. Must be a power of 2.
+         */
+        private static final int INITIAL_SIZE = 8;
 
         private record Entries(int[] keys, Object[] values) {
             private static Entries copy(int[] keys, Object[] values) {
@@ -120,12 +125,16 @@ sealed interface StaticIntMap<T> permits StaticIntMap.Array, StaticIntMap.Hash {
                     VarHandle.loadLoadFence();
 
                     newKeys[i] = k;
-                    if (k == -1 || k > 0) newValues[i] = v;
+                    switch (k) {
+                        case -1, 0: newValues[i] = v;
+                    }
                 }
 
                 return new Entries(newKeys, newValues);
             }
         }
+
+        private record Entry(int key, Object value) {}
 
         /**
          * Re-assigned whenever rehashing. {@code keys} and {@code values} array elements should only be accessed
@@ -161,59 +170,108 @@ sealed interface StaticIntMap<T> permits StaticIntMap.Array, StaticIntMap.Hash {
         private static int computeSize(int[] k) {
             int size = 0;
             for (int key : k) {
-                if (key == -1 || key > 0) size++;
+                switch (key) {
+                    case -1, 0: {}
+                    default: size++;
+                }
             }
             return size;
         }
 
-        private static int probeIndex(int start, int i, int mask) {
-            return (((start << 1) + i + (i * i)) >> 1) & mask;
+        /**
+         * Compute the probe sequence at index {@code i}, starting at {@code key}. The return value modulo the array
+         * length must be computed in order to actually use the index.
+         *
+         * @param key the key to probe
+         * @param i the probe sequence index
+         * @return the probe index, without computing the modulus
+         */
+        private static int probeIndex(int key, int i) {
+            // quadratic probing based on the function h(k, i) = h(k) + 0.5i + 0.5i^2
+            // to avoid needing to do floating point math, we actually solve 2h(k, i) = 2h(k) + i + i^2
+            return ((key << 1) + i + (i * i)) >>> 1;
+
+            // linear probing
+            // return key + i;
         }
 
+        /**
+         * Searches for {@code key} in the key set. Returns -1 iff the key does not exist. Should not be called on an
+         * empty key array!
+         * <p>
+         * Used when getting or removing entries.
+         *
+         * @param key the key to search
+         * @param k the key array
+         * @return the index of the key; -1 iff not present
+         */
         private static int probeKey(int key, int[] k) {
             final int mask = k.length - 1;
-            final int start = key & mask;
 
-            for (int i = 0; i < k.length; i++) {
-                final int probeIndex = probeIndex(start, i, mask);
+            for (int i = 0; ; i++) {
+                final int probeIndex = probeIndex(key, i) & mask;
                 final int sample = (int) IAA.getOpaque(k, probeIndex);
 
                 if (sample == key) return probeIndex;
                 else if (sample == 0) return -1;
             }
-
-            return -1;
         }
 
+        /**
+         * Searches for a strictly empty entry. Does not take into account removed entries. Only used when rehashing, as
+         * the new key array will not have any values that have been marked removed.
+         * <p>
+         * Should not be called on an empty array!
+         *
+         * @param key the key to ultimately put into the array
+         * @param k the key array
+         * @return the index of an empty place to put the key; -1 iff an empty position cannot be found
+         */
         private static int probeEmpty(int key, int[] k) {
             final int mask = k.length - 1;
-            final int start = key & mask;
 
-            for (int i = 0; i < k.length; i++) {
-                final int probeIndex = probeIndex(start, i, mask);
+            for (int i = 0; ; i++) {
+                final int probeIndex = probeIndex(key, i) & mask;
                 if ((int) IAA.getOpaque(k, probeIndex) == 0) return probeIndex;
             }
-
-            return -1;
         }
 
+        /**
+         * Searches for a place to insert the key. Will return (in order of priority):
+         *
+         * <ol>
+         *     <li>the index of {@code key} if it exists</li>
+         *     <li>first encountered removed entry</li>
+         *     <li>an empty slot</li>
+         * </ol>
+
+         * Used only by {@code put}. As with the other probe methods, this should never be called on an empty array!
+         *
+         * @param key the key
+         * @param k the key array
+         * @return the index of the location at which they key should be inserted; -1 otherwise
+         */
         private static int probePut(int key, int[] k) {
             final int mask = k.length - 1;
-            final int start = key & mask;
 
             int tombstoneIndex = -1;
-            for (int i = 0; i < k.length; i++) {
-                final int probeIndex = probeIndex(start, i, mask);
+            for (int i = 0; ; i++) {
+                final int probeIndex = probeIndex(key, i) & mask;
                 final int sample = (int) IAA.getOpaque(k, probeIndex);
 
-                if (tombstoneIndex == -1 && sample == -2) tombstoneIndex = probeIndex;
+                if (sample == 0) return tombstoneIndex == -1 ? probeIndex : tombstoneIndex;
+                else if (tombstoneIndex == -1 && sample == -1) tombstoneIndex = probeIndex;
                 else if (sample == key) return probeIndex;
-                else if (sample == 0) return tombstoneIndex == -1 ? probeIndex : tombstoneIndex;
             }
-
-            return tombstoneIndex;
         }
 
+        /**
+         * Resizes the table. Can either increase or decrease the table size.
+         * <p>
+         * This method does not check if the new size of the table is actually sufficient to hold all of its items.
+         *
+         * @param newSize the new size of the table; must be a power of 2
+         */
         @SuppressWarnings("unchecked")
         private void rehash(int newSize) {
             final Entries entries = this.entries;
@@ -228,12 +286,11 @@ sealed interface StaticIntMap<T> permits StaticIntMap.Array, StaticIntMap.Hash {
                 final T oldValue = (T) ((Object) OAA.getOpaque(v, i));
                 VarHandle.loadLoadFence();
 
-                if (oldKey == 0 || oldKey == -2) continue;
+                switch (oldKey) {
+                    case 0, -1: continue;
+                }
 
                 final int newIndex = probeEmpty(oldKey, newK);
-
-                // shouldn't happen unless rehashing to a newSize that can't fit all elements
-                assert newIndex != -1 : "Could not find space for rehashed element";
 
                 newK[newIndex] = oldKey;
                 newV[newIndex] = oldValue;
@@ -246,13 +303,13 @@ sealed interface StaticIntMap<T> permits StaticIntMap.Array, StaticIntMap.Hash {
         @Override
         public T get(int key) {
             final Entries entries = this.entries;
-            final int[] k = entries.keys;
-            final T[] v = (T[]) entries.values;
 
+            final int[] k = entries.keys;
             if (k.length == 0) return null;
 
-            if (key == 0) key--;
-            final int index = probeKey(key, k);
+            final T[] v = (T[]) entries.values;
+
+            final int index = probeKey(key + 1, k);
             if (index == -1) return null;
 
             return (T) ((Object) OAA.getOpaque(v, index));
@@ -270,8 +327,10 @@ sealed interface StaticIntMap<T> permits StaticIntMap.Array, StaticIntMap.Hash {
                 final T value = (T) ((Object) OAA.getOpaque(v, i));
                 VarHandle.loadLoadFence();
 
-                if (key == 0 || key == -2) continue;
-                consumer.accept(value);
+                switch (key) {
+                    case 0, -1: continue;
+                    default: consumer.accept(value);
+                }
             }
         }
 
@@ -288,13 +347,13 @@ sealed interface StaticIntMap<T> permits StaticIntMap.Array, StaticIntMap.Hash {
 
             final int[] k = entries.keys;
             final T[] v = (T[]) entries.values;
-            if (key == 0) key--;
+            key++;
 
             if (k.length == 0) {
-                final int[] newK = new int[4];
-                final T[] newV = (T[]) new Object[4];
+                final int[] newK = new int[INITIAL_SIZE];
+                final T[] newV = (T[]) new Object[INITIAL_SIZE];
 
-                int index = key & 3;
+                int index = key & (INITIAL_SIZE - 1);
                 newK[index] = key;
                 newV[index] = value;
 
@@ -308,10 +367,11 @@ sealed interface StaticIntMap<T> permits StaticIntMap.Array, StaticIntMap.Hash {
                 OAA.setOpaque(v, index, value);
                 VarHandle.storeStoreFence();
 
-                final int oldKey = (int) IAA.getOpaque(k, index);
-                if (oldKey == 0 || oldKey == -2) {
-                    IAA.setOpaque(k, index, key);
-                    this.size++;
+                switch ((int) IAA.getOpaque(k, index)) {
+                    case 0, -1: {
+                        IAA.setOpaque(k, index, key);
+                        this.size++;
+                    }
                 }
 
                 if (this.size + 1 >= (int) (k.length * LOAD_FACTOR)) rehash(k.length << 1);
@@ -327,15 +387,14 @@ sealed interface StaticIntMap<T> permits StaticIntMap.Array, StaticIntMap.Hash {
         public void remove(int key) {
             final Entries entries = this.entries;
             final int[] k = entries.keys;
-            final T[] v = (T[]) entries.values;
-
             if (k.length == 0) return;
 
-            if (key == 0) key--;
-            final int index = probeKey(key, k);
+            final T[] v = (T[]) entries.values;
+
+            final int index = probeKey(key + 1, k);
             if (index == -1) return;
 
-            IAA.setOpaque(k, index, -2);
+            IAA.setOpaque(k, index, -1);
             VarHandle.storeStoreFence();
             OAA.setOpaque(v, index, null);
 
