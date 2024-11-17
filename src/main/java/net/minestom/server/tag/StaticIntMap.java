@@ -105,7 +105,7 @@ sealed interface StaticIntMap<T> permits StaticIntMap.Array, StaticIntMap.Hash {
         /**
          * Initial size of the table. Must be a power of 2.
          */
-        private static final int INITIAL_SIZE = 8;
+        private static final int INITIAL_SIZE = 4;
 
         private record Entry(int key, Object value) {}
 
