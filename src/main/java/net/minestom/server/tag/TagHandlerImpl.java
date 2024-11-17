@@ -162,6 +162,15 @@ final class TagHandlerImpl implements TagHandler {
         return root.compound();
     }
 
+    @Override
+    public void clearTags() {
+        synchronized (this) {
+            root.entries.clear();
+            root.compound = null;
+            copy = null;
+        }
+    }
+
     private static Node traversePathRead(Node node, Tag<?> tag) {
         final Tag.PathEntry[] paths = tag.path;
         if (paths == null) return node;

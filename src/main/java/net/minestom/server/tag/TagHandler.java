@@ -44,6 +44,11 @@ public interface TagHandler extends TagReadable, TagWritable {
      */
     @NotNull CompoundBinaryTag asCompound();
 
+    /**
+     * Removes all tags from this TagHandler.
+     */
+    void clearTags();
+
     static @NotNull TagHandler newHandler() {
         return new TagHandlerImpl();
     }
