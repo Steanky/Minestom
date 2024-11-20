@@ -11,6 +11,8 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnknownNullability;
 
 //import java.lang.invoke.VarHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.Map;
 import java.util.function.UnaryOperator;
 
@@ -60,7 +62,7 @@ final class TagHandlerImpl implements TagHandler {
         Node node = traversePathWrite(root, tag, value != null);
         if (node == null)
             return; // Tried to remove an absent tag. Do nothing
-        StaticIntMap<Entry<?>> entries = node.entries;
+        final StaticIntMap<Entry<?>> entries = node.entries;
         if (value != null) {
             Entry previous = entries.get(tagIndex);
             if (previous != null && previous.tag.shareValue(tag)) {
@@ -112,12 +114,12 @@ final class TagHandlerImpl implements TagHandler {
         }
 
         final int tagIndex = tag.index;
-        StaticIntMap<Entry<?>> entries = node.entries;
+        final StaticIntMap<Entry<?>> entries = node.entries;
 
         final Entry previousEntry = entries.get(tagIndex);
         final T previousValue;
         if (previousEntry != null) {
-            final Object previousTmp = previousEntry.value;
+            final Object previousTmp = previousEntry.getValue();
             if (previousTmp instanceof Node n) {
                 final CompoundBinaryTag compound = CompoundBinaryTag.from(Map.of(tag.getKey(), n.compound()));
                 previousValue = tag.read(compound);
@@ -163,12 +165,9 @@ final class TagHandlerImpl implements TagHandler {
     }
 
     @Override
-    public void clearTags() {
-        synchronized (this) {
-            root.entries.clear();
-            root.compound = null;
-            copy = null;
-        }
+    public synchronized void clearTags() {
+        this.root.entries.clear();
+        this.root.invalidate();
     }
 
     private static Node traversePathRead(Node node, Tag<?> tag) {
@@ -193,7 +192,7 @@ final class TagHandlerImpl implements TagHandler {
             final Entry<?> entry = local.entries.get(pathIndex);
             if (entry != null && entry.tag.entry.isPath()) {
                 // Existing path, continue navigating
-                final Node tmp = (Node) entry.value;
+                final Node tmp = (Node) entry.getValue();
                 assert tmp.parent == local : "Path parent is invalid: " + tmp.parent + " != " + local;
                 local = tmp;
             } else {
@@ -202,7 +201,7 @@ final class TagHandlerImpl implements TagHandler {
                     var synEntry = local.entries.get(pathIndex);
                     if (synEntry != null && synEntry.tag.entry.isPath()) {
                         // Existing path, continue navigating
-                        final Node tmp = (Node) synEntry.value;
+                        final Node tmp = (Node) synEntry.getValue();
                         assert tmp.parent == local : "Path parent is invalid: " + tmp.parent + " != " + local;
                         local = tmp;
                         continue;
@@ -237,6 +236,19 @@ final class TagHandlerImpl implements TagHandler {
     }
 
     final class Node implements TagReadable {
+        private static final CompoundBinaryTag UPDATING_SENTINEL = CompoundBinaryTag
+                .from(Map.of("SENTINEL", CompoundBinaryTag.empty()));
+
+        private static final VarHandle COMPOUND_ACCESS;
+
+        static {
+            try {
+                COMPOUND_ACCESS = MethodHandles.lookup().findVarHandle(Node.class, "compound", CompoundBinaryTag.class);
+            } catch (NoSuchFieldException | IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
         final Node parent;
         final StaticIntMap<Entry<?>> entries;
         CompoundBinaryTag compound;
@@ -269,7 +281,7 @@ final class TagHandlerImpl implements TagHandler {
                 // The tag used to write the entry is compatible with the one used to get
                 // return the value directly
                 //noinspection unchecked
-                return (T) entry.value;
+                return (T) entry.getValue();
             }
             // Value must be parsed from nbt if the tag is different
             final BinaryTag nbt = entry.updatedNbt();
@@ -281,68 +293,125 @@ final class TagHandlerImpl implements TagHandler {
         void updateContent(@NotNull CompoundBinaryTag compound) {
             final TagHandlerImpl converted = fromCompound(compound);
             this.entries.updateContent(converted.root.entries);
-            this.compound = compound;
+            COMPOUND_ACCESS.setOpaque(this, compound);
         }
 
-        CompoundBinaryTag compound() {
-            CompoundBinaryTag compound;
-            if (!ServerFlag.TAG_HANDLER_CACHE_ENABLED || (compound = this.compound) == null) {
-                CompoundBinaryTag.Builder tmp = CompoundBinaryTag.builder();
-                this.entries.forValues(entry -> {
-                    final Tag tag = entry.tag;
-                    final BinaryTag nbt = entry.updatedNbt();
-                    if (nbt != null && (!tag.entry.isPath() || (!ServerFlag.SERIALIZE_EMPTY_COMPOUND) && ((CompoundBinaryTag) nbt).size() > 0)) {
-                        tmp.put(tag.getKey(), nbt);
-                    }
-                });
-                this.compound = compound = tmp.build();
+        @SuppressWarnings("rawtypes")
+        private CompoundBinaryTag computeCompound() {
+            CompoundBinaryTag.Builder tmp = CompoundBinaryTag.builder();
+            this.entries.forValues(entry -> {
+                final Tag tag = entry.tag;
+                final BinaryTag nbt = entry.updatedNbt();
+                if (nbt != null && (!tag.entry.isPath() || (!ServerFlag.SERIALIZE_EMPTY_COMPOUND) &&
+                        ((CompoundBinaryTag) nbt).size() > 0)) {
+                    tmp.put(tag.getKey(), nbt);
+                }
+            });
+
+            return tmp.build();
+        }
+
+        @NotNull CompoundBinaryTag compound() {
+            if (!ServerFlag.TAG_HANDLER_CACHE_ENABLED) return computeCompound();
+
+            CompoundBinaryTag compound = (CompoundBinaryTag) COMPOUND_ACCESS.compareAndExchange(this, null,
+                    UPDATING_SENTINEL);
+            if (compound == null) {
+                try {
+                    compound = computeCompound();
+                }
+                finally {
+                    COMPOUND_ACCESS.compareAndSet(this, UPDATING_SENTINEL, compound);
+                }
             }
+            else if (compound == UPDATING_SENTINEL) {
+                do compound = (CompoundBinaryTag) COMPOUND_ACCESS.getOpaque(this);
+                while (compound == UPDATING_SENTINEL);
+
+                if (compound == null) compound = computeCompound();
+            }
+
             return compound;
         }
 
+        @SuppressWarnings({"rawtypes", "unchecked"})
         @Contract("null -> !null")
         Node copy(Node parent) {
-            CompoundBinaryTag.Builder tmp = CompoundBinaryTag.builder();
-            Node result = new Node(parent, new StaticIntMap.Hash<>());
-            StaticIntMap<Entry<?>> entries = result.entries;
+            final CompoundBinaryTag.Builder tmp = CompoundBinaryTag.builder();
+            final Node result = new Node(parent, new StaticIntMap.Hash<>());
+            final StaticIntMap<Entry<?>> resultEntries = result.entries;
+
             this.entries.forValues(entry -> {
-                Tag tag = entry.tag;
-                Object value = entry.value;
+                final Tag tag = entry.tag;
+
+                Object value = entry.getValue();
                 BinaryTag nbt;
                 if (value instanceof Node node) {
                     Node copy = node.copy(result);
                     if (copy == null)
                         return; // Empty node
                     value = copy;
-                    nbt = copy.compound;
-                    assert nbt != null : "Node copy should also compute the compound";
+                    nbt = copy.compound();
                 } else {
                     nbt = entry.updatedNbt();
                 }
 
                 if (nbt != null)
                     tmp.put(tag.getKey(), nbt);
-                entries.put(tag.index, valueToEntry(result, tag, value));
+                resultEntries.put(tag.index, valueToEntry(result, tag, value));
             });
-            var compound = tmp.build();
+
+            final var compound = tmp.build();
             if ((!ServerFlag.SERIALIZE_EMPTY_COMPOUND) && compound.size() == 0 && parent != null)
                 return null; // Empty child node
+
+            // plain access is OK: `result` has not been made visible to other threads yet
             result.compound = compound;
             return result;
         }
 
         void invalidate() {
             Node tmp = this;
-            do tmp.compound = null;
+            do COMPOUND_ACCESS.setOpaque(tmp, null);
             while ((tmp = tmp.parent) != null);
             TagHandlerImpl.this.copy = null;
         }
     }
 
     private static final class Entry<T> {
+        // used to enable CAS/CAE operations when updating cached nbt value
+        private static final BinaryTag UPDATING_SENTINEL =
+                new BinaryTag() {
+                    @Override
+                    public @NotNull BinaryTagType<? extends BinaryTag> type() {
+                        return BinaryTagTypes.BYTE;
+                    }
+                };
+
+        private static final VarHandle VALUE_ACCESS;
+        private static final VarHandle NBT_ACCESS;
+
+        static {
+            try {
+                VALUE_ACCESS = MethodHandles.lookup().findVarHandle(Entry.class, "value", Object.class);
+                NBT_ACCESS = MethodHandles.lookup().findVarHandle(Entry.class, "nbt", BinaryTag.class);
+            } catch (NoSuchFieldException | IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
         private final Tag<T> tag;
-        T value;
-        BinaryTag nbt;
+
+        /**
+         * Accessed through {@link Entry#VALUE_ACCESS}
+         */
+        @SuppressWarnings({"FieldMayBeFinal", "FieldCanBeLocal"})
+        private T value;
+
+        /**
+         * Accessed through {@link Entry#NBT_ACCESS}
+         */
+        private BinaryTag nbt;
 
         Entry(Tag<T> tag, T value) {
             this.tag = tag;
@@ -357,21 +426,54 @@ final class TagHandlerImpl implements TagHandler {
             return makePathEntry(tag.getKey(), node);
         }
 
+        @SuppressWarnings("unchecked")
         BinaryTag updatedNbt() {
-            if (tag.entry.isPath()) return ((Node) value).compound();
-            BinaryTag nbt = this.nbt;
-            if (nbt == null) this.nbt = nbt = tag.entry.write(value);
+            if (tag.entry.isPath()) return ((Node) getValue()).compound();
+
+            BinaryTag nbt = (BinaryTag) NBT_ACCESS.compareAndExchange(this, null, UPDATING_SENTINEL);
+
+            // if null: we need to update the cached nbt
+            if (nbt == null) {
+                try {
+                    // serialize our value
+                    nbt = tag.entry.write((T) ((Object) VALUE_ACCESS.getAcquire(this)));
+                }
+                finally {
+                    // out of threads calling updatedNbt, only the thread that initially reads nbt as null may update it
+                    // if another thread writes nbt = null (ex. one calling updateValue), we won't update the cache
+                    NBT_ACCESS.compareAndSet(this, UPDATING_SENTINEL, nbt);
+                }
+            }
+            else if (nbt == UPDATING_SENTINEL) { // another thread is serializing the new value
+                // do a quick spin-wait to see if we can get the serialized result from the other thread
+                do nbt = (BinaryTag) NBT_ACCESS.getOpaque(this);
+                while (nbt == UPDATING_SENTINEL);
+
+                // the other thread's update failed: maybe it was interrupted by updateValue?
+                // serialize the value directly, but don't update
+                if (nbt == null) nbt = tag.entry.write((T) ((Object) VALUE_ACCESS.getAcquire(this)));
+            }
+
+            // no update needed, return the cached value
             return nbt;
         }
 
         void updateValue(T value) {
             assert !tag.entry.isPath();
-            this.value = value;
-            this.nbt = null;
+
+            // release mode to ensure if nbt is seen as null, the new value that caused it to be null is also seen
+            // updateValue can be called without any synchronization!
+            VALUE_ACCESS.setRelease(this, value);
+            NBT_ACCESS.setRelease(this, null);
+        }
+
+        @SuppressWarnings("unchecked")
+        T getValue() {
+            return (T) ((Object) VALUE_ACCESS.getOpaque(this));
         }
 
         Node toNode() {
-            if (tag.entry.isPath()) return (Node) value;
+            if (tag.entry.isPath()) return (Node) getValue();
             if (updatedNbt() instanceof CompoundBinaryTag compound) {
                 // Slow path forcing a conversion of the structure to NBTCompound
                 // TODO should the handler be cached inside the entry?
