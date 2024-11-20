@@ -2,6 +2,7 @@ package net.minestom.server.utils.async;
 
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.VisibleForTesting;
 
 import java.lang.invoke.MethodHandles;
@@ -75,6 +76,19 @@ public final class CachedValue<T> implements Supplier<T> {
         return witness;
     }
 
+    private void unblockWaiters() {
+        Thread lastWaiter = null;
+        while (!waiters.isEmpty()) {
+            Thread thisWaiter = waiters.peek();
+            if (thisWaiter != lastWaiter) {
+                LockSupport.unpark(thisWaiter);
+                lastWaiter = thisWaiter;
+            }
+
+            Thread.onSpinWait();
+        }
+    }
+
     @SuppressWarnings("unchecked")
     public T get() {
         while (true) {
@@ -87,26 +101,18 @@ public final class CachedValue<T> implements Supplier<T> {
 
                 synchronized (waiters) {
                     // we must set the newValue here, so it is made visible to waiting threads
-                    VALUE_ACCESS.setRelease(this, newValue);
+                    boolean interruptBySet = !VALUE_ACCESS.compareAndSet(this, COMPUTING, newValue);
 
-                    // unblock any threads waiting for computation
-                    Thread lastWaiter = null;
-                    while (!waiters.isEmpty()) {
-                        Thread thisWaiter = waiters.peek();
-                        if (thisWaiter != lastWaiter) {
-                            LockSupport.unpark(thisWaiter);
-                            lastWaiter = thisWaiter;
-                        }
-
-                        Thread.onSpinWait();
-                    }
+                    if (!interruptBySet)
+                        unblockWaiters();
 
                     // at this point, we may have been invalidated by a call to invalidate()
                     // we may be in state COMPUTING if a new computation has started, or INVALID if it hasn't
                     final Object sample = (Object) VALUE_ACCESS.getAcquire(this);
                     if (sample == INVALID || sample == COMPUTING) continue;
 
-                    return newValue;
+                    // if another thread set during our compute, use its value
+                    return interruptBySet ? (T) sample : newValue;
                 }
             }
             else if (currentValue == COMPUTING) {
@@ -129,6 +135,16 @@ public final class CachedValue<T> implements Supplier<T> {
                 if (witness != INVALID) return (T) witness;
             }
             else return (T) currentValue;
+        }
+    }
+
+    public void set(@Nullable T value) {
+        synchronized (waiters) {
+            final Object oldValue = VALUE_ACCESS.getAndSet(this, value);
+
+            // if we set during a computation, unblock the waiters
+            if (oldValue == COMPUTING)
+                unblockWaiters();
         }
     }
 

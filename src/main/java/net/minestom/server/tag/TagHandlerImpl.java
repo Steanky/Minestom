@@ -5,6 +5,7 @@ import net.kyori.adventure.nbt.BinaryTagType;
 import net.kyori.adventure.nbt.BinaryTagTypes;
 import net.kyori.adventure.nbt.CompoundBinaryTag;
 import net.minestom.server.ServerFlag;
+import net.minestom.server.utils.async.CachedValue;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -33,7 +34,7 @@ final class TagHandlerImpl implements TagHandler {
     static TagHandlerImpl fromCompound(CompoundBinaryTag compound) {
         TagHandlerImpl handler = new TagHandlerImpl();
         TagNbtSeparator.separate(compound, entry -> handler.setTag(entry.tag(), entry.value()));
-        handler.root.compound = compound;
+        handler.root.compound.set(compound);
         return handler;
     }
 
@@ -236,26 +237,14 @@ final class TagHandlerImpl implements TagHandler {
     }
 
     final class Node implements TagReadable {
-        private static final CompoundBinaryTag UPDATING_SENTINEL = CompoundBinaryTag
-                .from(Map.of("SENTINEL", CompoundBinaryTag.empty()));
-
-        private static final VarHandle COMPOUND_ACCESS;
-
-        static {
-            try {
-                COMPOUND_ACCESS = MethodHandles.lookup().findVarHandle(Node.class, "compound", CompoundBinaryTag.class);
-            } catch (NoSuchFieldException | IllegalAccessException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
         final Node parent;
         final StaticIntMap<Entry<?>> entries;
-        CompoundBinaryTag compound;
+        final CachedValue<CompoundBinaryTag> compound;
 
         public Node(Node parent, StaticIntMap<Entry<?>> entries) {
             this.parent = parent;
             this.entries = entries;
+            this.compound = CachedValue.cachedValue(this::computeCompound);
         }
 
         Node(Node parent) {
@@ -293,7 +282,7 @@ final class TagHandlerImpl implements TagHandler {
         void updateContent(@NotNull CompoundBinaryTag compound) {
             final TagHandlerImpl converted = fromCompound(compound);
             this.entries.updateContent(converted.root.entries);
-            COMPOUND_ACCESS.setOpaque(this, compound);
+            this.compound.set(compound);
         }
 
         @SuppressWarnings("rawtypes")
@@ -313,25 +302,7 @@ final class TagHandlerImpl implements TagHandler {
 
         @NotNull CompoundBinaryTag compound() {
             if (!ServerFlag.TAG_HANDLER_CACHE_ENABLED) return computeCompound();
-
-            CompoundBinaryTag compound = (CompoundBinaryTag) COMPOUND_ACCESS.compareAndExchange(this, null,
-                    UPDATING_SENTINEL);
-            if (compound == null) {
-                try {
-                    compound = computeCompound();
-                }
-                finally {
-                    COMPOUND_ACCESS.compareAndSet(this, UPDATING_SENTINEL, compound);
-                }
-            }
-            else if (compound == UPDATING_SENTINEL) {
-                do compound = (CompoundBinaryTag) COMPOUND_ACCESS.getOpaque(this);
-                while (compound == UPDATING_SENTINEL);
-
-                if (compound == null) compound = computeCompound();
-            }
-
-            return compound;
+            return compound.get();
         }
 
         @SuppressWarnings({"rawtypes", "unchecked"})
@@ -365,36 +336,24 @@ final class TagHandlerImpl implements TagHandler {
             if ((!ServerFlag.SERIALIZE_EMPTY_COMPOUND) && compound.size() == 0 && parent != null)
                 return null; // Empty child node
 
-            // plain access is OK: `result` has not been made visible to other threads yet
-            result.compound = compound;
+            result.compound.set(compound);
             return result;
         }
 
         void invalidate() {
             Node tmp = this;
-            do COMPOUND_ACCESS.setOpaque(tmp, null);
+            do tmp.compound.invalidate();
             while ((tmp = tmp.parent) != null);
             TagHandlerImpl.this.copy = null;
         }
     }
 
     private static final class Entry<T> {
-        // used to enable CAS/CAE operations when updating cached nbt value
-        private static final BinaryTag UPDATING_SENTINEL =
-                new BinaryTag() {
-                    @Override
-                    public @NotNull BinaryTagType<? extends BinaryTag> type() {
-                        return BinaryTagTypes.BYTE;
-                    }
-                };
-
         private static final VarHandle VALUE_ACCESS;
-        private static final VarHandle NBT_ACCESS;
 
         static {
             try {
                 VALUE_ACCESS = MethodHandles.lookup().findVarHandle(Entry.class, "value", Object.class);
-                NBT_ACCESS = MethodHandles.lookup().findVarHandle(Entry.class, "nbt", BinaryTag.class);
             } catch (NoSuchFieldException | IllegalAccessException e) {
                 throw new RuntimeException(e);
             }
@@ -408,14 +367,12 @@ final class TagHandlerImpl implements TagHandler {
         @SuppressWarnings({"FieldMayBeFinal", "FieldCanBeLocal"})
         private T value;
 
-        /**
-         * Accessed through {@link Entry#NBT_ACCESS}
-         */
-        private BinaryTag nbt;
+        private final CachedValue<BinaryTag> nbt;
 
         Entry(Tag<T> tag, T value) {
             this.tag = tag;
             this.value = value;
+            this.nbt = CachedValue.cachedValue(this::computeNbt);
         }
 
         static Entry<?> makePathEntry(String path, Node node) {
@@ -427,44 +384,20 @@ final class TagHandlerImpl implements TagHandler {
         }
 
         @SuppressWarnings("unchecked")
+        private BinaryTag computeNbt() {
+            return tag.entry.write((T) ((Object) VALUE_ACCESS.getAcquire(this)));
+        }
+
         BinaryTag updatedNbt() {
             if (tag.entry.isPath()) return ((Node) getValue()).compound();
-
-            BinaryTag nbt = (BinaryTag) NBT_ACCESS.compareAndExchange(this, null, UPDATING_SENTINEL);
-
-            // if null: we need to update the cached nbt
-            if (nbt == null) {
-                try {
-                    // serialize our value
-                    nbt = tag.entry.write((T) ((Object) VALUE_ACCESS.getAcquire(this)));
-                }
-                finally {
-                    // out of threads calling updatedNbt, only the thread that initially reads nbt as null may update it
-                    // if another thread writes nbt = null (ex. one calling updateValue), we won't update the cache
-                    NBT_ACCESS.compareAndSet(this, UPDATING_SENTINEL, nbt);
-                }
-            }
-            else if (nbt == UPDATING_SENTINEL) { // another thread is serializing the new value
-                // do a quick spin-wait to see if we can get the serialized result from the other thread
-                do nbt = (BinaryTag) NBT_ACCESS.getOpaque(this);
-                while (nbt == UPDATING_SENTINEL);
-
-                // the other thread's update failed: maybe it was interrupted by updateValue?
-                // serialize the value directly, but don't update
-                if (nbt == null) nbt = tag.entry.write((T) ((Object) VALUE_ACCESS.getAcquire(this)));
-            }
-
-            // no update needed, return the cached value
-            return nbt;
+            return nbt.get();
         }
 
         void updateValue(T value) {
             assert !tag.entry.isPath();
 
-            // release mode to ensure if nbt is seen as null, the new value that caused it to be null is also seen
-            // updateValue can be called without any synchronization!
             VALUE_ACCESS.setRelease(this, value);
-            NBT_ACCESS.setRelease(this, null);
+            nbt.invalidate();
         }
 
         @SuppressWarnings("unchecked")
