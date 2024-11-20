@@ -75,10 +75,6 @@ public final class CachedValue<T> implements Supplier<T> {
         return witness;
     }
 
-    private void removeWaiter(Thread currentThread) {
-        if (waiters.poll() != currentThread) throw new IllegalStateException("Removed wrong waiter thread!");
-    }
-
     @SuppressWarnings("unchecked")
     public T get() {
         while (true) {
@@ -91,8 +87,7 @@ public final class CachedValue<T> implements Supplier<T> {
 
                 synchronized (waiters) {
                     // we must set the newValue here, so it is made visible to waiting threads
-                    if (!VALUE_ACCESS.compareAndSet(this, COMPUTING, newValue))
-                        throw new IllegalStateException("Failed to update value!");
+                    VALUE_ACCESS.setRelease(this, newValue);
 
                     // unblock any threads waiting for computation
                     Thread lastWaiter = null;
@@ -129,7 +124,7 @@ public final class CachedValue<T> implements Supplier<T> {
                 }
 
                 Object witness = awaitComputation(currentThread);
-                removeWaiter(currentThread);
+                waiters.poll();
 
                 if (witness != INVALID) return (T) witness;
             }
@@ -150,20 +145,11 @@ public final class CachedValue<T> implements Supplier<T> {
             if (witness != COMPUTING && VALUE_ACCESS.compareAndSet(this, witness, INVALID))
                 return;
 
-            if ((Object) VALUE_ACCESS.getAcquire(this) != COMPUTING)
-                throw new IllegalStateException("Unexpected value!");
-
             waiters.add(currentThread);
         }
 
-        Object witness = awaitComputation(currentThread);
-        if (witness == COMPUTING || witness == INVALID)
-            throw new IllegalStateException("Witness value is " +
-                    (witness == COMPUTING ? "COMPUTING" : "INVALID") + " when it should have been a computed value");
-
-        if (!VALUE_ACCESS.compareAndSet(this, witness, INVALID))
-            throw new IllegalStateException("Value changed when it shouldn't have");
-
-        removeWaiter(currentThread);
+        awaitComputation(currentThread);
+        VALUE_ACCESS.setRelease(this, INVALID);
+        waiters.poll();
     }
 }
