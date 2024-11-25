@@ -31,7 +31,7 @@ public class CachedValueInvalidateOrderTest {
 
     @Arbiter
     public void arbiter(ZZ_Result r) {
-        VarHandle valueAccess = CachedValue.access();
+        VarHandle valueAccess = CachedValue.valueAccess();
         Object value = (Object) valueAccess.get(cachedValue);
 
         r.r1 = value == CachedValue.INVALID;

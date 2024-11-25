@@ -30,8 +30,8 @@ public class CachedValueCoherenceTest {
 
     @Arbiter
     public void arbiter(IZZ_Result r) {
-        VarHandle valueAccess = CachedValue.access();
-        Object value = (Object) valueAccess.get(cachedValue);
+        VarHandle valueAccess = CachedValue.valueAccess();
+        Object value = (Object) valueAccess.getVolatile(cachedValue);
 
         if (value == CachedValue.INVALID) {
             r.r1 = 0;
@@ -45,7 +45,7 @@ public class CachedValueCoherenceTest {
         }
         else {
             r.r1 = 1;
-            r.r2 = value == Integer.valueOf(1);
+            r.r2 = value.equals(1);
             r.r3 = cachedValue.waiters().isEmpty();
         }
     }

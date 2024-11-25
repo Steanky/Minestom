@@ -34,7 +34,7 @@ final class TagHandlerImpl implements TagHandler {
     static TagHandlerImpl fromCompound(CompoundBinaryTag compound) {
         TagHandlerImpl handler = new TagHandlerImpl();
         TagNbtSeparator.separate(compound, entry -> handler.setTag(entry.tag(), entry.value()));
-        handler.root.compound.set(compound);
+        handler.root.compound.setIfInvalid(compound);
         return handler;
     }
 
